@@ -1,0 +1,70 @@
+name: Build M.C. Kids HD (Windows)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Get private repository files
+        uses: actions/checkout@v4
+
+      - name: Set up Python for game-source generation
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Extract the HD prototype ZIP
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:GITHUB_WORKSPACE 'MCKids-HD-Mick-Experimental-v0.1.zip'
+          if (!(Test-Path -LiteralPath $archive)) {
+            throw 'Upload MCKids-HD-Mick-Experimental-v0.1.zip to the PRIVATE repository root first.'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath 'game' -Force
+          if (!(Test-Path 'game/MCKidsRecomp-Windows-Prototype/source/CMakeLists.txt')) {
+            throw 'Unexpected archive layout: source/CMakeLists.txt missing.'
+          }
+
+      - name: Configure Windows release build
+        shell: pwsh
+        working-directory: ./game/MCKidsRecomp-Windows-Prototype
+        run: |
+          $rom = (Resolve-Path '.\MCKids.nes').Path
+          cmake -S source -B source/build-hd-windows -G 'Visual Studio 17 2022' -A x64 "-DNESRECOMP_ROM=$rom"
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed: $LASTEXITCODE" }
+
+      - name: Compile the HD-enabled Windows EXE
+        shell: pwsh
+        working-directory: ./game/MCKidsRecomp-Windows-Prototype
+        run: |
+          cmake --build source/build-hd-windows --config Release --parallel 4
+          if ($LASTEXITCODE -ne 0) { throw "Build failed: $LASTEXITCODE" }
+
+      - name: Assemble the ready-to-run folder
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE 'game/MCKidsRecomp-Windows-Prototype'
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'output/MCKids-HD-Mick'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $exe = Join-Path $root 'source/build-hd-windows/Release/MCKidsRecomp.exe'
+          if (!(Test-Path $exe)) { throw 'Expected HD executable was not produced.' }
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $dest 'MCKidsRecomp-HD.exe')
+          foreach ($file in @('MCKids.nes', 'SDL2.dll', 'config.ini', 'Launch-HD.cmd', 'Launch-HD-Widescreen.cmd', 'HD-MICK-READ-ME.txt', 'NESRecomp-LICENSE.txt', 'SDL2-LICENSE.txt')) {
+            Copy-Item -LiteralPath (Join-Path $root $file) -Destination $dest
+          }
+          Copy-Item -LiteralPath (Join-Path $root 'hd_mick') -Destination (Join-Path $dest 'hd_mick') -Recurse
+          Copy-Item -LiteralPath (Join-Path $root 'saves') -Destination (Join-Path $dest 'saves') -Recurse
+          Write-Host 'Ready-to-run folder assembled; source and build tools are not included.'
+
+      - name: Downloadable Windows game package
+        uses: actions/upload-artifact@v4
+        with:
+          name: MCKids-HD-Mick-Windows-Ready
+          path: output/MCKids-HD-Mick/
+          if-no-files-found: error
+          retention-days: 7
